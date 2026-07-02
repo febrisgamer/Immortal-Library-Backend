@@ -126,6 +126,32 @@ async function uploadToImgBB(file) {
     };
 }
 
+async function uploadAvatarUrlToImgBB(photoUrl, fileName) {
+    const imageResponse = await axios.get(photoUrl, {
+        responseType: "arraybuffer"
+    });
+    const form = new FormData();
+    form.append(
+        "image",
+        Buffer.from(imageResponse.data).toString("base64")
+    );
+    form.append(
+        "name",
+        fileName
+    );
+    const response = await axios.post(
+        `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`,
+        form,
+        {
+            headers: form.getHeaders(),
+            maxBodyLength: Infinity
+        }
+    );
+    return {
+        avatar: response.data.data.url
+    };
+}
+
 app.get("/health", (req, res) => {
     res.json({
         success: true,
@@ -186,6 +212,33 @@ app.post(
         }
     }
 );
+
+app.post("/upload-avatar", async (req, res) => {
+    try {
+        const { photoURL, uid } = req.body;
+        if (!photoURL) {
+            return res.status(400).json({
+                success: false,
+                error: "Missing photoURL"
+            });
+        }
+        const avatar = await uploadAvatarUrlToImgBB(
+            photoURL,
+            uid || "avatar"
+        );
+        res.json({
+            success: true,
+            avatar: avatar.avatar
+        });
+    }
+    catch (err) {
+        console.error(err);
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
+});
 
 const PORT = process.env.PORT || 3000;
 
