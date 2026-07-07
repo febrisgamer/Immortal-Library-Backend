@@ -7,8 +7,14 @@ const fs = require("fs");
 const app = express();
 const axios = require("axios");
 const FormData = require("form-data");
+const admin = require("firebase-admin");
 
 require("dotenv").config();
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+});
+const db = admin.firestore();
 
 app.use(cors({
     origin: [
@@ -152,6 +158,47 @@ async function uploadAvatarUrlToImgBB(photoUrl, fileName) {
     };
 }
 
+async function verifyAdmin(req, res, next) {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith("Bearer ")) {
+            return res.status(401).json({
+                success: false,
+                error: "Unauthorized"
+            });
+        }
+        const token = authHeader.split("Bearer ")[1];
+        const decoded = await admin.auth().verifyIdToken(token);
+        const adminDoc = await db
+            .collection("admins")
+            .doc(decoded.email)
+            .get();
+        if (!adminDoc.exists) {
+            return res.status(403).json({
+                success: false,
+                error: "Not an administrator"
+            });
+        }
+        const data = adminDoc.data();
+        if (data.uid !== decoded.uid) {
+            return res.status(403).json({
+                success: false,
+                error: "UID mismatch"
+            });
+        }
+        req.user = decoded;
+        req.adminData = data;
+        next();
+    }
+    catch (err) {
+        console.error(err);
+        return res.status(401).json({
+            success: false,
+            error: "Invalid authentication"
+        });
+    }
+}
+
 app.get("/health", (req, res) => {
     res.json({
         success: true,
@@ -161,6 +208,7 @@ app.get("/health", (req, res) => {
 
 app.post(
     "/upload",
+    verifyAdmin,
     upload.fields([
         {
             name:"cover",
@@ -213,7 +261,7 @@ app.post(
     }
 );
 
-app.post("/upload-avatar", async (req, res) => {
+app.post("/upload-avatar", verifyAdmin, async (req, res) => {
     try {
         const { photoURL, uid } = req.body;
         if (!photoURL) {
