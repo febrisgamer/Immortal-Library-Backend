@@ -164,37 +164,46 @@ async function uploadAvatarUrlToImgBB(photoUrl, fileName) {
 async function verifyAdmin(req, res, next) {
     try {
         const authHeader = req.headers.authorization;
+
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
             return res.status(401).json({
                 success: false,
                 error: "Unauthorized"
             });
         }
-        const token = authHeader.split("Bearer ")[1];
+
+        const token = authHeader.substring(7);
         const decoded = await auth.verifyIdToken(token);
+
+        const email = decoded.email?.toLowerCase();
+
+        if (!email) {
+            return res.status(401).json({
+                success: false,
+                error: "Email not found in token"
+            });
+        }
+
         const adminDoc = await db
             .collection("admins")
-            .doc(decoded.email)
+            .doc(email)
             .get();
+
         if (!adminDoc.exists) {
             return res.status(403).json({
                 success: false,
                 error: "Not an administrator"
             });
         }
-        const data = adminDoc.data();
-        if (data.uid !== decoded.uid) {
-            return res.status(403).json({
-                success: false,
-                error: "UID mismatch"
-            });
-        }
+
         req.user = decoded;
-        req.adminData = data;
+        req.adminData = adminDoc.data();
+
         next();
     }
     catch (err) {
         console.error(err);
+
         return res.status(401).json({
             success: false,
             error: "Invalid authentication"
