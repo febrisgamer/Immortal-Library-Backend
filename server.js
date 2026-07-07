@@ -7,14 +7,17 @@ const fs = require("fs");
 const app = express();
 const axios = require("axios");
 const FormData = require("form-data");
-const admin = require("firebase-admin");
+const { initializeApp, cert } = require("firebase-admin/app");
+const { getAuth } = require("firebase-admin/auth");
+const { getFirestore } = require("firebase-admin/firestore");
 
 require("dotenv").config();
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
+initializeApp({
+    credential: cert(serviceAccount)
 });
-const db = admin.firestore();
+const db = getFirestore();
+const auth = getAuth();
 
 app.use(cors({
     origin: [
@@ -168,7 +171,7 @@ async function verifyAdmin(req, res, next) {
             });
         }
         const token = authHeader.split("Bearer ")[1];
-        const decoded = await admin.auth().verifyIdToken(token);
+        const decoded = await auth.verifyIdToken(token);
         const adminDoc = await db
             .collection("admins")
             .doc(decoded.email)
