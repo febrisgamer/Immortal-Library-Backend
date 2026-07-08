@@ -50,6 +50,12 @@ Immortal Library
 */
 
 const BOOKS_FOLDER_ID = "1ZBFaiY2pORDGrf8UB4DsgjnkoBCedFPS";
+const ALLOWED_AVATAR_HOSTS = new Set([
+    "lh3.googleusercontent.com",
+    "lh4.googleusercontent.com",
+    "lh5.googleusercontent.com",
+    "lh6.googleusercontent.com"
+]);
 
 app.get("/", (req, res) => {
     res.send("Immortal Library Backend Running");
@@ -104,15 +110,19 @@ async function uploadToDrive(file, folderId){
 }
 
 async function uploadToImgBB(file) {
+
     const form = new FormData();
+
     form.append(
         "image",
         file.buffer.toString("base64")
     );
+
     form.append(
         "name",
         path.parse(file.originalname).name
     );
+
     const response = await axios.post(
         `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`,
         form,
@@ -121,23 +131,23 @@ async function uploadToImgBB(file) {
             maxBodyLength: Infinity
         }
     );
-    const data = response.data.data;
-    return {
-        id: data.id,
-        deleteUrl: data.delete_url,
-        imageUrl: data.url,
-        displayUrl: data.display_url,
-        viewerUrl: data.url_viewer,
-        thumbUrl: data.thumb.url,
-        mediumUrl: data.medium
-            ? data.medium.url
-            : data.display_url
-    };
+
+    return response.data.data.url;
+
 }
 
 async function uploadAvatarUrlToImgBB(photoUrl, fileName) {
+    const url = new URL(photoUrl);
+    if (
+        url.protocol !== "https:" ||
+        !ALLOWED_AVATAR_HOSTS.has(url.hostname)
+    ) {
+        throw new Error("Invalid avatar URL.");
+    }
     const imageResponse = await axios.get(photoUrl, {
-        responseType: "arraybuffer"
+        responseType: "arraybuffer",
+        timeout: 10000,
+        maxRedirects: 2
     });
     const form = new FormData();
     form.append(
@@ -257,10 +267,10 @@ app.post(
                     BOOKS_FOLDER_ID
                 );
             res.json({
-                success:true,
+                success: true,
                 metadata,
-                cover:coverResult,
-                epub:epubResult
+                coverUrl: coverResult,
+                epub: epubResult
             });
         }
         catch(err){
