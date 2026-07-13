@@ -26,7 +26,8 @@ app.use(cors({
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://immortal-library.web.app",
-        "https://immortal-library.firebaseapp.com"
+        "https://immortal-library.firebaseapp.com",
+        "https://library.btgw.in"
     ]
 }));
 app.use(express.json());
