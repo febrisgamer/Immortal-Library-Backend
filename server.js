@@ -689,22 +689,20 @@ app.post("/delete-account", async (req, res) => {
         if(!idToken){
             return sendFailure(res, 401, "Missing authentication token.");
         }
+        const decoded = await auth.verifyIdToken(idToken);
+        const uid = decoded.uid;
+        const email = decoded.email?.toLowerCase();
+        if(!uid){
+            return sendFailure(res, 401, "Invalid authentication token.");
+        }
         await db.collection("userdata").doc(uid).delete();
-        await db.collection("admins").doc(email.toLowerCase()).delete();
+        if(email){
+            await db.collection("admins").doc(email).delete();
+        }
         await auth.deleteUser(uid);
         return res.json({
             success: true,
             message: "Account deleted successfully."
-        });
-        console.log("Authenticated User");
-        console.log({
-            uid,
-            email
-        });
-        return res.json({
-            success: true,
-            uid,
-            email
         });
     }
     catch(err){
