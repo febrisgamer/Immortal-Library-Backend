@@ -683,6 +683,40 @@ app.post("/upload-avatar", verifyAdmin, async (req, res) => {
     }
 });
 
+app.post("/delete-account", async (req, res) => {
+    try{
+        const { idToken } = req.body;
+        if(!idToken){
+            return sendFailure(res, 401, "Missing authentication token.");
+        }
+        await db.collection("userdata").doc(uid).delete();
+        await db.collection("admins").doc(email.toLowerCase()).delete();
+        await auth.deleteUser(uid);
+        return res.json({
+            success: true,
+            message: "Account deleted successfully."
+        });
+        console.log("Authenticated User");
+        console.log({
+            uid,
+            email
+        });
+        return res.json({
+            success: true,
+            uid,
+            email
+        });
+    }
+    catch(err){
+        console.error(err);
+        return sendFailure(
+            res,
+            401,
+            "Invalid or expired authentication token."
+        );
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
