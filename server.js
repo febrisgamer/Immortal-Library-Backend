@@ -170,6 +170,9 @@ async function uploadToImgBB(file) {
 }
 
 async function uploadAvatarUrlToImgBB(photoUrl, fileName) {
+    if(!process.env.IMGBB_API_KEY){
+        throw new Error("ImgBB API key is not configured.");
+    }
     const url = new URL(photoUrl);
     if (
         url.protocol !== "https:" ||
@@ -200,8 +203,34 @@ async function uploadAvatarUrlToImgBB(photoUrl, fileName) {
         }
     );
     return {
-        avatar: response.data.data.url
+        avatar: response.data.data.url,
+        deleteUrl: response.data.data.delete_url || null
     };
+}
+
+async function deleteImgBBImage(deleteUrl){
+    if(!deleteUrl){
+        return false;
+    }
+
+    const response = await axios.get(deleteUrl, {
+        timeout: 10000,
+        maxRedirects: 2
+    });
+
+    return response.status >= 200 && response.status < 400;
+}
+
+function generateAdminUsername(displayName){
+    const username = String(displayName || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+
+    if(username){
+        return username;
+    }
+
+    return `user${Math.floor(10000000 + Math.random() * 90000000)}`;
 }
 
 async function validateCover(file){
@@ -662,22 +691,77 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
     });
 });
 
-app.post("/upload-avatar", verifyAdmin, async (req, res) => {
-    try {
-        const { photoURL, uid } = req.body;
-        if (!photoURL) {
-            return sendFailure(res, 400, "Missing photoURL");
+app.post("/create-account", verifyAdmin, async (req, res) => {
+    try{
+        const uid = req.user?.uid;
+        const displayName = (
+            req.user?.name ||
+            req.user?.displayName ||
+            ""
+        ).trim();
+        const photoURL = req.user?.picture;
+
+        if(!uid){
+            return sendFailure(res, 401, "Invalid authentication token.");
         }
-        const avatar = await uploadAvatarUrlToImgBB(
-            photoURL,
-            uid || "avatar"
-        );
-        res.json({
+
+        const profileRef = db.collection("userdata").doc(uid);
+        const existing = await profileRef.get();
+
+        if(existing.exists){
+            return res.json({
+                success: true,
+                exists: true
+            });
+        }
+
+        if(!photoURL){
+            return sendFailure(res, 400, "Missing profile picture.");
+        }
+
+        const avatarResult = await uploadAvatarUrlToImgBB(photoURL, uid);
+        const assetRef = db.collection("userdata_assets").doc(uid);
+        const profile = {
+            uid,
+            username: generateAdminUsername(displayName),
+            displayName,
+            avatar: avatarResult.avatar,
+            banner: null,
+            decoration: null,
+            owner: false,
+            role: "admin",
+            createdAt: Date.now()
+        };
+
+        try{
+            const batch = db.batch();
+            batch.create(profileRef, profile);
+            batch.create(assetRef, {
+                avatarDeleteUrl: avatarResult.deleteUrl || null
+            });
+            await batch.commit();
+        }
+        catch(err){
+            if(
+                err?.code === 6 ||
+                err?.code === 409 ||
+                /already exists/i.test(err?.message || "")
+            ){
+                return res.json({
+                    success: true,
+                    exists: true
+                });
+            }
+            throw err;
+        }
+
+        return res.json({
             success: true,
-            avatar: avatar.avatar
+            exists: false,
+            profile
         });
     }
-    catch (err) {
+    catch(err){
         console.error(err);
         return sendFailure(res, 500, err.message);
     }
@@ -695,14 +779,31 @@ app.post("/delete-account", async (req, res) => {
         if(!uid){
             return sendFailure(res, 401, "Invalid authentication token.");
         }
+
+        const assetRef = db.collection("userdata_assets").doc(uid);
+        const assetSnap = await assetRef.get();
+        const avatarDeleteUrl = assetSnap.exists
+            ? assetSnap.data()?.avatarDeleteUrl
+            : null;
+
+        let imageDeleted = false;
+        try{
+            imageDeleted = await deleteImgBBImage(avatarDeleteUrl);
+        }
+        catch(err){
+            console.warn("ImgBB image deletion failed:", err.message || err);
+        }
+
         await db.collection("userdata").doc(uid).delete();
+        await assetRef.delete();
         if(email){
             await db.collection("admins").doc(email).delete();
         }
         await auth.deleteUser(uid);
         return res.json({
             success: true,
-            message: "Account deleted successfully."
+            message: "Account deleted successfully.",
+            imageDeleted
         });
     }
     catch(err){
