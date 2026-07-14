@@ -11,7 +11,7 @@ const axios = require("axios");
 const FormData = require("form-data");
 const { initializeApp, cert } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
-const { getFirestore } = require("firebase-admin/firestore");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 
 require("dotenv").config();
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -720,7 +720,7 @@ app.post("/create-account", verifyAdmin, async (req, res) => {
         }
 
         const avatarResult = await uploadAvatarUrlToImgBB(photoURL, uid);
-        const assetRef = db.collection("userdata_assets").doc(uid);
+        const deleteUrlRef = db.collection("userdeleteurl").doc("urls");
         const profile = {
             uid,
             username: generateAdminUsername(displayName),
@@ -736,8 +736,14 @@ app.post("/create-account", verifyAdmin, async (req, res) => {
         try{
             const batch = db.batch();
             batch.create(profileRef, profile);
-            batch.create(assetRef, {
-                avatarDeleteUrl: avatarResult.deleteUrl || null
+            batch.set(deleteUrlRef, {
+                [uid]: {
+                    avatarDeleteUrl: avatarResult.deleteUrl || null,
+                    bannerDeleteUrl: null,
+                    decorationDeleteUrl: null
+                }
+            }, {
+                merge: true
             });
             await batch.commit();
         }
@@ -780,22 +786,39 @@ app.post("/delete-account", async (req, res) => {
             return sendFailure(res, 401, "Invalid authentication token.");
         }
 
-        const assetRef = db.collection("userdata_assets").doc(uid);
-        const assetSnap = await assetRef.get();
-        const avatarDeleteUrl = assetSnap.exists
-            ? assetSnap.data()?.avatarDeleteUrl
+        const deleteUrlRef = db.collection("userdeleteurl").doc("urls");
+        const deleteUrlSnap = await deleteUrlRef.get();
+        const userDeleteUrls = deleteUrlSnap.exists
+            ? deleteUrlSnap.data()?.[uid]
             : null;
+        const avatarDeleteUrl = userDeleteUrls?.avatarDeleteUrl || null;
+        const bannerDeleteUrl = userDeleteUrls?.bannerDeleteUrl || null;
+        const decorationDeleteUrl = userDeleteUrls?.decorationDeleteUrl || null;
 
-        let imageDeleted = false;
+        const urlsToDelete = [
+            avatarDeleteUrl,
+            bannerDeleteUrl,
+            decorationDeleteUrl
+        ].filter(Boolean);
+        let imageDeleted = urlsToDelete.length === 0;
         try{
-            imageDeleted = await deleteImgBBImage(avatarDeleteUrl);
+            const deleteResults = await Promise.allSettled(
+                urlsToDelete.map(deleteImgBBImage)
+            );
+            imageDeleted = deleteResults.every(result =>
+                result.status === "fulfilled" ? result.value === true : false
+            );
         }
         catch(err){
             console.warn("ImgBB image deletion failed:", err.message || err);
         }
 
         await db.collection("userdata").doc(uid).delete();
-        await assetRef.delete();
+        if(deleteUrlSnap.exists){
+            await deleteUrlRef.update({
+                [uid]: FieldValue.delete()
+            });
+        }
         if(email){
             await db.collection("admins").doc(email).delete();
         }
