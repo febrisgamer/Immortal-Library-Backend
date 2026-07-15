@@ -30,7 +30,7 @@ app.use(cors({
         "https://library.btgw.in"
     ]
 }));
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -208,6 +208,43 @@ async function uploadAvatarUrlToImgBB(photoUrl, fileName) {
     };
 }
 
+async function uploadValidatedImageToImgBB(buffer, fileName){
+    if(!process.env.IMGBB_API_KEY){
+        throw new Error("ImgBB API key is not configured.");
+    }
+
+    const form = new FormData();
+    form.append(
+        "image",
+        buffer.toString("base64")
+    );
+    form.append(
+        "name",
+        fileName
+    );
+
+    const response = await axios.post(
+        `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`,
+        form,
+        {
+            headers: form.getHeaders(),
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity
+        }
+    );
+
+    const data = response.data?.data || {};
+    const imageUrl = data.url;
+    if(!imageUrl){
+        throw new Error("ImgBB upload failed.");
+    }
+
+    return {
+        imageUrl,
+        deleteUrl: data.delete_url || null
+    };
+}
+
 async function deleteImgBBImage(deleteUrl){
     if(!deleteUrl){
         return false;
@@ -231,6 +268,83 @@ function generateAdminUsername(displayName){
     }
 
     return `user${Math.floor(10000000 + Math.random() * 90000000)}`;
+}
+
+function parseDataUrlImagePayload(value, fieldName){
+    if(value === undefined || value === null || value === ""){
+        return null;
+    }
+
+    if(typeof value !== "string"){
+        throw new Error(`Invalid ${fieldName}.`);
+    }
+
+    const match = value.match(/^data:([^;,]+);base64,(.+)$/i);
+    if(!match){
+        throw new Error(`Invalid ${fieldName}.`);
+    }
+
+    const mimeType = match[1].toLowerCase();
+    if(!mimeType.startsWith("image/")){
+        throw new Error(`Invalid ${fieldName}.`);
+    }
+
+    const buffer = Buffer.from(match[2], "base64");
+    if(!buffer.length){
+        throw new Error(`Invalid ${fieldName}.`);
+    }
+
+    return {
+        buffer,
+        mimeType
+    };
+}
+
+async function validateEditableImage(buffer, fieldName, declaredMimeType = ""){
+    const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+    const ALLOWED_FORMATS = new Set([
+        "jpeg",
+        "jpg",
+        "png",
+        "webp",
+        "gif",
+        "avif",
+        "tiff",
+        "heif",
+        "heic"
+    ]);
+
+    if(!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > MAX_IMAGE_BYTES){
+        throw new Error(`Invalid ${fieldName}.`);
+    }
+
+    if(
+        typeof declaredMimeType === "string" &&
+        declaredMimeType.toLowerCase() === "image/svg+xml"
+    ){
+        throw new Error(`Invalid ${fieldName}.`);
+    }
+
+    let metadata;
+    try{
+        metadata = await sharp(buffer, { failOnError: true }).metadata();
+    }
+    catch{
+        throw new Error(`Invalid ${fieldName}.`);
+    }
+
+    if(
+        !metadata?.format ||
+        !ALLOWED_FORMATS.has(metadata.format) ||
+        !metadata.width ||
+        !metadata.height
+    ){
+        throw new Error(`Invalid ${fieldName}.`);
+    }
+
+    if(metadata.width * metadata.height > 40000000){
+        throw new Error(`Invalid ${fieldName}.`);
+    }
 }
 
 async function validateCover(file){
@@ -766,6 +880,139 @@ app.post("/create-account", verifyAdmin, async (req, res) => {
     catch(err){
         console.error(err);
         return sendFailure(res, 500, err.message);
+    }
+});
+
+app.post("/save-edited-profile", verifyAdmin, async (req, res) => {
+    try{
+        const uid = req.user?.uid;
+        if(!uid){
+            return sendFailure(res, 401, "Invalid authentication token.");
+        }
+
+        const profileRef = db.collection("userdata").doc(uid);
+        const profileSnap = await profileRef.get();
+        if(!profileSnap.exists){
+            return sendFailure(res, 404, "Profile not found.");
+        }
+
+        const contRef = db.collection("cont").doc(uid);
+        const contSnap = await contRef.get();
+        const currentDeleteUrls = contSnap.exists ? contSnap.data() || {} : {};
+
+        const updates = {};
+        const contUpdates = {};
+        const cleanupTargets = [];
+        const existingProfile = profileSnap.data() || {};
+
+        const displayName = typeof req.body?.displayName === "string"
+            ? req.body.displayName.trim()
+            : "";
+        const username = typeof req.body?.username === "string"
+            ? req.body.username.trim()
+            : "";
+
+        if(displayName){
+            updates.displayName = displayName;
+        }
+
+        if(username){
+            updates.username = username;
+        }
+
+        const editableImages = [
+            {
+                field: "avatar",
+                deleteField: "avatarDeleteUrl",
+                data: parseDataUrlImagePayload(req.body?.avatar, "avatar")
+            },
+            {
+                field: "banner",
+                deleteField: "bannerDeleteUrl",
+                data: parseDataUrlImagePayload(req.body?.banner, "banner")
+            },
+            {
+                field: "decoration",
+                deleteField: "decorationDeleteUrl",
+                data: parseDataUrlImagePayload(req.body?.decoration, "decoration")
+            }
+        ];
+
+        const uploadedImages = {};
+        for(const item of editableImages){
+            if(!item.data){
+                continue;
+            }
+
+            await validateEditableImage(
+                item.data.buffer,
+                item.field,
+                item.data.mimeType
+            );
+
+            const currentDeleteUrl = currentDeleteUrls[item.deleteField] || null;
+            const uploadResult = await uploadValidatedImageToImgBB(
+                item.data.buffer,
+                `${uid}-${item.field}`
+            );
+
+            uploadedImages[item.field] = uploadResult.imageUrl;
+            updates[item.field] = uploadResult.imageUrl;
+            contUpdates[item.deleteField] = uploadResult.deleteUrl || null;
+            cleanupTargets.push(currentDeleteUrl);
+        }
+
+        if(
+            Object.keys(updates).length === 0 &&
+            Object.keys(contUpdates).length === 0
+        ){
+            return sendFailure(res, 400, "Nothing to save.");
+        }
+
+        const batch = db.batch();
+        if(Object.keys(updates).length){
+            batch.update(profileRef, updates);
+        }
+        if(Object.keys(contUpdates).length){
+            if(!contSnap.exists){
+                if(!Object.prototype.hasOwnProperty.call(contUpdates, "avatarDeleteUrl")){
+                    contUpdates.avatarDeleteUrl = null;
+                }
+                if(!Object.prototype.hasOwnProperty.call(contUpdates, "bannerDeleteUrl")){
+                    contUpdates.bannerDeleteUrl = null;
+                }
+                if(!Object.prototype.hasOwnProperty.call(contUpdates, "decorationDeleteUrl")){
+                    contUpdates.decorationDeleteUrl = null;
+                }
+            }
+            batch.set(contRef, contUpdates, { merge: true });
+        }
+        await batch.commit();
+
+        await Promise.allSettled(
+            cleanupTargets
+                .filter(Boolean)
+                .map(deleteImgBBImage)
+        );
+
+        return res.json({
+            success: true,
+            profile: {
+                ...existingProfile,
+                ...updates,
+                uid
+            },
+            uploadedImages
+        });
+    }
+    catch(err){
+        console.error(err);
+        const statusCode = /^(Missing|Invalid|Nothing to save|Profile not found)/.test(
+            err.message || ""
+        )
+            ? 400
+            : 500;
+        return sendFailure(res, statusCode, err.message);
     }
 });
 
