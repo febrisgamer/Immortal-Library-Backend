@@ -11,7 +11,7 @@ const axios = require("axios");
 const FormData = require("form-data");
 const { initializeApp, cert } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getFirestore } = require("firebase-admin/firestore");
 
 require("dotenv").config();
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -720,7 +720,7 @@ app.post("/create-account", verifyAdmin, async (req, res) => {
         }
 
         const avatarResult = await uploadAvatarUrlToImgBB(photoURL, uid);
-        const deleteUrlRef = db.collection("userdeleteurl").doc("urls");
+        const contRef = db.collection("cont").doc(uid);
         const profile = {
             uid,
             username: generateAdminUsername(displayName),
@@ -736,14 +736,10 @@ app.post("/create-account", verifyAdmin, async (req, res) => {
         try{
             const batch = db.batch();
             batch.create(profileRef, profile);
-            batch.set(deleteUrlRef, {
-                [uid]: {
-                    avatarDeleteUrl: avatarResult.deleteUrl || null,
-                    bannerDeleteUrl: null,
-                    decorationDeleteUrl: null
-                }
-            }, {
-                merge: true
+            batch.set(contRef, {
+                avatarDeleteUrl: avatarResult.deleteUrl || null,
+                bannerDeleteUrl: null,
+                decorationDeleteUrl: null
             });
             await batch.commit();
         }
@@ -786,11 +782,9 @@ app.post("/delete-account", async (req, res) => {
             return sendFailure(res, 401, "Invalid authentication token.");
         }
 
-        const deleteUrlRef = db.collection("userdeleteurl").doc("urls");
-        const deleteUrlSnap = await deleteUrlRef.get();
-        const userDeleteUrls = deleteUrlSnap.exists
-            ? deleteUrlSnap.data()?.[uid]
-            : null;
+        const contRef = db.collection("cont").doc(uid);
+        const contSnap = await contRef.get();
+        const userDeleteUrls = contSnap.exists ? contSnap.data() : null;
         const avatarDeleteUrl = userDeleteUrls?.avatarDeleteUrl || null;
         const bannerDeleteUrl = userDeleteUrls?.bannerDeleteUrl || null;
         const decorationDeleteUrl = userDeleteUrls?.decorationDeleteUrl || null;
@@ -814,10 +808,8 @@ app.post("/delete-account", async (req, res) => {
         }
 
         await db.collection("userdata").doc(uid).delete();
-        if(deleteUrlSnap.exists){
-            await deleteUrlRef.update({
-                [uid]: FieldValue.delete()
-            });
+        if(contSnap.exists){
+            await contRef.delete();
         }
         if(email){
             await db.collection("admins").doc(email).delete();
