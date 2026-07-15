@@ -250,10 +250,34 @@ async function deleteImgBBImage(deleteUrl){
         return false;
     }
 
-    const response = await axios.get(deleteUrl, {
-        timeout: 10000,
-        maxRedirects: 2
-    });
+    const parsedUrl = new URL(deleteUrl);
+    const parts = parsedUrl.pathname.split("/").filter(Boolean);
+    if(parts.length < 2){
+        throw new Error("Invalid ImgBB delete URL.");
+    }
+
+    const [imageId, imageHash] = parts.slice(-2);
+    const form = new FormData();
+    form.append("pathname", `/${imageId}/${imageHash}`);
+    form.append("action", "delete");
+    form.append("delete", "image");
+    form.append("from", "resource");
+    form.append("deleting[id]", imageId);
+    form.append("deleting[hash]", imageHash);
+
+    const response = await axios.post(
+        "https://ibb.co/json",
+        form,
+        {
+            headers: {
+                ...form.getHeaders(),
+                Referer: deleteUrl,
+                Origin: "https://ibb.co"
+            },
+            timeout: 10000,
+            maxRedirects: 2
+        }
+    );
 
     return response.status >= 200 && response.status < 400;
 }
