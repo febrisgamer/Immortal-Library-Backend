@@ -11,7 +11,7 @@ const axios = require("axios");
 const FormData = require("form-data");
 const { initializeApp, cert } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
-const { getFirestore } = require("firebase-admin/firestore");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 
 require("dotenv").config();
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -868,7 +868,7 @@ app.post("/create-account", verifyAdmin, async (req, res) => {
             decoration: null,
             owner: false,
             role: "admin",
-            createdAt: Date.now()
+            createdAt: FieldValue.serverTimestamp()
         };
 
         try{
