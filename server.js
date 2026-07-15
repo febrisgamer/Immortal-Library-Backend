@@ -902,7 +902,6 @@ app.post("/save-edited-profile", verifyAdmin, async (req, res) => {
 
         const updates = {};
         const contUpdates = {};
-        const cleanupTargets = [];
         const existingProfile = profileSnap.data() || {};
 
         const displayName = typeof req.body?.displayName === "string"
@@ -951,6 +950,23 @@ app.post("/save-edited-profile", verifyAdmin, async (req, res) => {
             );
 
             const currentDeleteUrl = currentDeleteUrls[item.deleteField] || null;
+            if(currentDeleteUrl){
+                try{
+                    const deleted = await deleteImgBBImage(currentDeleteUrl);
+                    if(!deleted){
+                        console.warn(
+                            `ImgBB deletion returned a non-success response for ${item.field}.`
+                        );
+                    }
+                }
+                catch(err){
+                    console.warn(
+                        `ImgBB deletion failed for ${item.field}:`,
+                        err.message || err
+                    );
+                }
+            }
+
             const uploadResult = await uploadValidatedImageToImgBB(
                 item.data.buffer,
                 `${uid}-${item.field}`
@@ -959,7 +975,6 @@ app.post("/save-edited-profile", verifyAdmin, async (req, res) => {
             uploadedImages[item.field] = uploadResult.imageUrl;
             updates[item.field] = uploadResult.imageUrl;
             contUpdates[item.deleteField] = uploadResult.deleteUrl || null;
-            cleanupTargets.push(currentDeleteUrl);
         }
 
         if(
@@ -988,12 +1003,6 @@ app.post("/save-edited-profile", verifyAdmin, async (req, res) => {
             batch.set(contRef, contUpdates, { merge: true });
         }
         await batch.commit();
-
-        await Promise.allSettled(
-            cleanupTargets
-                .filter(Boolean)
-                .map(deleteImgBBImage)
-        );
 
         return res.json({
             success: true,
