@@ -385,6 +385,26 @@ async function validateCover(file){
     }
 }
 
+async function optimizeCover(file){
+    const buffer = await sharp(file.buffer)
+        .resize({
+            height: 600,
+            fit: "inside",
+            withoutEnlargement: true
+        })
+        .webp({
+            quality: 82,
+            effort: 6
+        })
+        .toBuffer();
+    return {
+        ...file,
+        buffer,
+        mimetype: "image/webp",
+        originalname: `${path.parse(file.originalname).name}.webp`
+    };
+}
+
 async function validateEpub(file){
     const allowedMimeTypes=new Set([
         "application/epub+zip",
@@ -800,6 +820,7 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
             }
             await validateCover(cover);
             await validateEpub(epub);
+            const optimizedCover = await optimizeCover(cover);
             const epubsCollection=db.collection("epubs");
             const finalBookId=await getUniqueBookId(
                 epubsCollection,
@@ -807,7 +828,7 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
             );
             let coverUrl;
             try{
-                coverUrl=await uploadToImgBB(cover);
+                coverUrl = await uploadToImgBB(optimizedCover);
             }
             catch(err){
                 throw new Error(
@@ -1023,6 +1044,7 @@ app.post("/multiple-epub", verifyAdmin, (req, res) => {
                 throw new Error("Invalid book ID.");
             }
             await validateCover(cover);
+            const optimizedCover = await optimizeCover(cover);
             for(const volume of volumes){
                 await validateEpub(volume.file);
             }
@@ -1033,7 +1055,7 @@ app.post("/multiple-epub", verifyAdmin, (req, res) => {
             );
             let coverUrl;
             try{
-                coverUrl=await uploadToImgBB(cover);
+                coverUrl = await uploadToImgBB(optimizedCover);
             }
             catch(err){
                 throw new Error(
