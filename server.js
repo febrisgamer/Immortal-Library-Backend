@@ -659,11 +659,14 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
             const description=requireStringField(req.body.description, "description");
             const mainGenre=requireStringField(req.body.mainGenre, "main genre")
                 .toLowerCase();
-            const chapterNumber=parseIntegerField(
-                req.body.chapterNumber,
-                "chapter number",
-                { min:1 }
-            );
+            const chapterNumber =
+                category === "Book" || category === "Poetry"
+                    ? null
+                    : parseIntegerField(
+                        req.body.chapterNumber,
+                        "chapter number",
+                        { min: 1 }
+                    );
             const downloads=parseIntegerField(
                 req.body.downloads,
                 "downloads",
