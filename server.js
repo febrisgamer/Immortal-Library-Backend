@@ -627,6 +627,80 @@ const uploadEpubFiles=upload.fields([
     }
 ]);
 
+const uploadMultipleEpubFiles=upload.any();
+
+function getUploadedFilesByField(files){
+    return (files || []).reduce((fields, file)=>{
+        if(!fields[file.fieldname]){
+            fields[file.fieldname]=[];
+        }
+        fields[file.fieldname].push(file);
+        return fields;
+    }, {});
+}
+
+function parseMultipleVolumes(rawVolumes, filesByField){
+    if(rawVolumes === undefined || rawVolumes === null || rawVolumes === ""){
+        throw new Error("Missing volumes.");
+    }
+
+    let parsed;
+    try{
+        parsed=typeof rawVolumes === "string"
+            ? JSON.parse(rawVolumes)
+            : rawVolumes;
+    }
+    catch{
+        throw new Error("Invalid volumes.");
+    }
+
+    if(!Array.isArray(parsed) || parsed.length === 0){
+        throw new Error("Missing volumes.");
+    }
+
+    const seenVolumeNumbers=new Set();
+
+    return parsed.map((volume, index)=>{
+        if(!volume || typeof volume !== "object" || Array.isArray(volume)){
+            throw new Error("Invalid volumes.");
+        }
+
+        const volumeNumber=parseIntegerField(
+            volume.volumeNumber,
+            "volume number",
+            {
+                min:1
+            }
+        );
+
+        if(volumeNumber !== index + 1 || seenVolumeNumbers.has(volumeNumber)){
+            throw new Error("Invalid volume number.");
+        }
+
+        seenVolumeNumbers.add(volumeNumber);
+
+        const volumeTitle=requireStringField(
+            volume.volumeTitle,
+            "volume title"
+        );
+        const volumeFiles=filesByField[`volume${index}`] || [];
+
+        if(volumeFiles.length === 0){
+            throw new Error("Missing volume EPUB.");
+        }
+
+        if(volumeFiles.length > 1){
+            throw new Error("Invalid upload request.");
+        }
+
+        return {
+            volumeNumber,
+            volumeTitle,
+            file:volumeFiles[0]
+        };
+    });
+}
+
 app.post("/upload-epub", verifyAdmin, (req, res) => {
     uploadEpubFiles(req, res, async uploadError => {
         if(uploadError){
@@ -637,11 +711,9 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
                 uploadError.message || "Invalid upload request."
             );
         }
-
         try{
             const cover=req.files?.cover?.[0];
             const epub=req.files?.epub?.[0];
-
             if(!cover || !epub){
                 return sendFailure(
                     res,
@@ -649,7 +721,6 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
                     "Cover and EPUB are required."
                 );
             }
-
             const bookName=requireStringField(req.body.bookName, "book name");
             const authorName=requireStringField(req.body.authorName, "author name");
             const category=requireStringField(req.body.category, "category");
@@ -717,29 +788,23 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
                     lowercase:true
                 }
             );
-
             if(tags.length === 0){
                 throw new Error("At least one tag is required.");
             }
-
             const baseBookId=normalizeBookId(
                 req.body.bookId,
                 bookName
             );
-
             if(!baseBookId){
                 throw new Error("Invalid book ID.");
             }
-
             await validateCover(cover);
             await validateEpub(epub);
-
             const epubsCollection=db.collection("epubs");
             const finalBookId=await getUniqueBookId(
                 epubsCollection,
                 baseBookId
             );
-
             let coverUrl;
             try{
                 coverUrl=await uploadToImgBB(cover);
@@ -752,7 +817,6 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
                     )}`
                 );
             }
-
             let epubResult;
             try{
                 epubResult=await uploadToDrive(
@@ -768,7 +832,6 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
                     )}`
                 );
             }
-
             const finalData={
                 bookId:finalBookId,
                 bookName,
@@ -779,6 +842,7 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
                 downloads,
                 views,
                 mainGenre,
+                mode: "single",
                 genres,
                 alternateTitles,
                 language,
@@ -792,7 +856,6 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
                 epubUrl:epubResult.viewUrl,
                 epubDownloadUrl:epubResult.downloadUrl
             };
-
             const batch=db.batch();
             batch.set(
                 epubsCollection.doc(finalBookId),
@@ -809,9 +872,240 @@ app.post("/upload-epub", verifyAdmin, (req, res) => {
                     merge:true
                 }
             );
-
             await batch.commit();
+            return res.json({
+                success:true,
+                message:"Book uploaded successfully.",
+                bookId:finalBookId
+            });
+        }
+        catch(err){
+            console.error(err);
 
+            const statusCode=/^(Missing|Invalid|Cover|Corrupted|At least one tag)/.test(
+                err.message
+            )
+                ? 400
+                : 500;
+
+            return sendFailure(res, statusCode, err.message);
+        }
+    });
+});
+
+app.post("/multiple-epub", verifyAdmin, (req, res) => {
+    uploadMultipleEpubFiles(req, res, async uploadError => {
+        if(uploadError){
+            console.error(uploadError);
+            return sendFailure(
+                res,
+                400,
+                uploadError.message || "Invalid upload request."
+            );
+        }
+        try{
+            const filesByField=getUploadedFilesByField(req.files);
+            const invalidFile=Object.keys(filesByField).find(fieldName=>
+                fieldName !== "cover" &&
+                !/^volume\d+$/.test(fieldName)
+            );
+            if(invalidFile){
+                throw new Error("Invalid upload request.");
+            }
+
+            const coverFiles=filesByField.cover || [];
+            if(coverFiles.length === 0){
+                return sendFailure(
+                    res,
+                    400,
+                    "Cover and EPUB are required."
+                );
+            }
+            if(coverFiles.length > 1){
+                throw new Error("Invalid upload request.");
+            }
+            const cover=coverFiles[0];
+
+            const mode=requireStringField(req.body.mode, "mode");
+            if(mode !== "multiple"){
+                throw new Error("Invalid mode.");
+            }
+
+            const volumes=parseMultipleVolumes(
+                req.body.volumes,
+                filesByField
+            );
+            const expectedFileFields=new Set([
+                "cover",
+                ...volumes.map((volume, index)=>`volume${index}`)
+            ]);
+            const unexpectedFile=Object.keys(filesByField).find(
+                fieldName=>!expectedFileFields.has(fieldName)
+            );
+            if(unexpectedFile){
+                throw new Error("Invalid upload request.");
+            }
+            const bookName=requireStringField(req.body.bookName, "book name");
+            const authorName=requireStringField(req.body.authorName, "author name");
+            const category=requireStringField(req.body.category, "category");
+            const language=requireStringField(req.body.language, "language");
+            const origin=requireStringField(req.body.origin, "origin");
+            const status=requireStringField(req.body.status, "status");
+            const description=requireStringField(req.body.description, "description");
+            const mainGenre=requireStringField(req.body.mainGenre, "main genre")
+                .toLowerCase();
+            const chapterNumber =
+                category === "Book" || category === "Poetry"
+                    ? null
+                    : parseIntegerField(
+                        req.body.chapterNumber,
+                        "chapter number",
+                        { min: 1 }
+                    );
+            const downloads=parseIntegerField(
+                req.body.downloads,
+                "downloads",
+                {
+                    defaultValue:0,
+                    min:0
+                }
+            );
+            const views=parseIntegerField(
+                req.body.views,
+                "views",
+                {
+                    defaultValue:0,
+                    min:0
+                }
+            );
+            const createdAt=parseIntegerField(
+                req.body.createdAt,
+                "createdAt",
+                {
+                    defaultValue:Date.now(),
+                    min:0
+                }
+            );
+            const updatedAt=parseIntegerField(
+                req.body.updatedAt,
+                "updatedAt",
+                {
+                    defaultValue:createdAt,
+                    min:0
+                }
+            );
+            const alternateTitles=parseJsonArrayField(
+                req.body.alternateTitles,
+                "alternateTitles"
+            );
+            const genres=parseJsonArrayField(
+                req.body.genres,
+                "genres",
+                {
+                    lowercase:true
+                }
+            );
+            const tags=parseJsonArrayField(
+                req.body.tags,
+                "tags",
+                {
+                    lowercase:true
+                }
+            );
+            if(tags.length === 0){
+                throw new Error("At least one tag is required.");
+            }
+            const baseBookId=normalizeBookId(
+                req.body.bookId,
+                bookName
+            );
+            if(!baseBookId){
+                throw new Error("Invalid book ID.");
+            }
+            await validateCover(cover);
+            for(const volume of volumes){
+                await validateEpub(volume.file);
+            }
+            const epubsCollection=db.collection("epubs");
+            const finalBookId=await getUniqueBookId(
+                epubsCollection,
+                baseBookId
+            );
+            let coverUrl;
+            try{
+                coverUrl=await uploadToImgBB(cover);
+            }
+            catch(err){
+                throw new Error(
+                    `Cover upload failed: ${getExternalErrorMessage(
+                        err,
+                        "ImgBB upload failed."
+                    )}`
+                );
+            }
+            const volumeMap={};
+            for(const volume of volumes){
+                let epubResult;
+                try{
+                    epubResult=await uploadToDrive(
+                        volume.file,
+                        BOOKS_FOLDER_ID
+                    );
+                }
+                catch(err){
+                    throw new Error(
+                        `EPUB upload failed: ${getExternalErrorMessage(
+                            err,
+                            "Google Drive upload failed."
+                        )}`
+                    );
+                }
+                volumeMap[`volume${volume.volumeNumber}`]={
+                    title:volume.volumeTitle,
+                    epubUrl:epubResult.viewUrl,
+                    epubDownloadUrl:epubResult.downloadUrl
+                };
+            }
+            const finalData={
+                bookId:finalBookId,
+                bookName,
+                authorName,
+                category,
+                chapterNumber,
+                description,
+                downloads,
+                views,
+                mainGenre,
+                mode: "multiple",
+                genres,
+                alternateTitles,
+                language,
+                origin,
+                status,
+                tags,
+                createdAt,
+                updatedAt,
+                uploaderUid:req.user.uid,
+                coverUrl,
+                volumes:volumeMap
+            };
+            const batch=db.batch();
+            batch.set(
+                epubsCollection.doc(finalBookId),
+                finalData
+            );
+            batch.set(
+                epubsCollection.doc("metadata"),
+                {
+                    browse:{
+                        [finalBookId]:buildBrowseEntry(finalData)
+                    }
+                },
+                {
+                    merge:true
+                }
+            );
+            await batch.commit();
             return res.json({
                 success:true,
                 message:"Book uploaded successfully.",
